@@ -1,5 +1,5 @@
-# Compatibility entry point. The maintained copy is scripts/cloudflare-ddns-ipv6.rsc.
-# Replace every YOUR_* value before importing or pasting into RouterOS.
+# Cloudflare IPv6 DDNS
+# Updates an AAAA record only when the PPPoE global IPv6 address changes.
 
 :local CFAPITOKEN "YOUR_CLOUDFLARE_API_TOKEN"
 :local CFZoneID "YOUR_CLOUDFLARE_ZONE_ID"
