@@ -27,6 +27,26 @@
 
 ## Cloudflare IPv6 DDNS
 
+### 使用背景
+
+RouterOS 自带 [MikroTik Cloud DDNS](https://help.mikrotik.com/docs/spaces/ROS/pages/97779929/Cloud#Cloud-DDNS)，一般场景直接使用它即可。
+
+这个脚本主要面向以下情况：宽带没有公网 IPv4，但具有动态公网 IPv6；WireGuard 等服务需要使用只解析到 IPv6 的自定义域名。RouterOS Cloud 可能同时发布运营商分配的非公网 IPv4，客户端优先尝试该 IPv4 时会造成连接失败。因此这里单独维护 Cloudflare AAAA 记录，不创建 A 记录。
+
+![RouterOS 脚本展示](Resource/iShot_2025-08-23_06.39.45.png)
+
+### 功能特性
+
+- 自动获取指定 PPPoE 接口的公网 IPv6。
+- 排除 link-local、无效、禁用及 Deprecated 地址。
+- 只更新 Cloudflare AAAA 记录，不写入 IPv4 A 记录。
+- 仅在 IPv6 变化时调用 Cloudflare API。
+- 使用 `check-certificate=yes` 验证 HTTPS 证书。
+- 解析 Cloudflare JSON，只有 `success=true` 才缓存最新地址。
+- 地址未变化时保持静默，避免每 5 分钟产生重复日志。
+
+### 配置参数
+
 需要替换：
 
 ```routeros
@@ -36,14 +56,113 @@
 :local CFDNSNAME "YOUR_DDNS_HOSTNAME"
 ```
 
-脚本会：
+| 参数 | 含义 |
+| --- | --- |
+| `CFAPITOKEN` | Cloudflare API Token，不是 Zone ID 或 Global API Key |
+| `CFZoneID` | 域名所在 Zone 的区域 ID |
+| `CFRecordID` | 需要更新的那一条 AAAA DNS 记录 ID |
+| `CFDNSNAME` | 完整域名，例如 `router.example.com` |
+| `WANInterface` | 获取公网 IPv6 的 RouterOS 接口，默认 `pppoe-out1` |
 
-- 只选择 PPPoE 接口上有效、未禁用、未 Deprecated 的公网 IPv6。
-- 使用 TLS 证书验证访问 Cloudflare API。
-- 解析 API JSON，仅在 `success=true` 后缓存最新地址。
-- 地址未变化时保持静默。
+### 创建 Cloudflare API Token
 
-Scheduler：
+打开 [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens)：
+
+1. 登录 Cloudflare，进入右上角个人资料。
+2. 打开“API 令牌”。
+3. 选择“创建令牌”。
+4. 使用“编辑区域 DNS”模板，或创建自定义令牌。
+5. 权限设置为 `Zone / DNS / Edit` 和 `Zone / Zone / Read`。
+6. Zone Resources 只选择需要更新的域名。
+7. 创建令牌并妥善保存；Cloudflare 不会再次完整显示它。
+
+不建议使用 Global API Key。最小权限 Token 即使泄露，影响范围也更小。
+
+### 获取 Zone ID
+
+1. 打开 [Cloudflare Dashboard](https://dash.cloudflare.com)。
+2. 选择目标域名。
+3. 进入“概述”。
+4. 在页面右侧或底部的 API 区域找到 `Zone ID`。
+
+### 创建 AAAA 记录
+
+先在 Cloudflare DNS 页面手工创建一条 AAAA 记录：
+
+```text
+类型：AAAA
+名称：router（按实际子域名填写）
+IPv6：可以先填一个临时地址，例如 2001:db8::1
+代理状态：仅 DNS（DNS only）
+TTL：Auto
+```
+
+脚本第一次成功运行后会覆盖临时 IPv6。
+
+### 获取 Record ID
+
+Linux 或 macOS 安装 `curl` 和 `jq` 后执行：
+
+```bash
+CFAPITOKEN="你的 API Token"
+CFZoneID="你的 Zone ID"
+CFDNSNAME="router.example.com"
+
+curl -sS \
+  "https://api.cloudflare.com/client/v4/zones/${CFZoneID}/dns_records?type=AAAA&name=${CFDNSNAME}" \
+  -H "Authorization: Bearer ${CFAPITOKEN}" \
+  -H "Content-Type: application/json" | jq
+```
+
+返回结果示例：
+
+```json
+{
+  "result": [
+    {
+      "id": "这里就是 CFRecordID",
+      "name": "router.example.com",
+      "type": "AAAA",
+      "content": "2001:db8::1",
+      "proxied": false,
+      "ttl": 1
+    }
+  ],
+  "success": true,
+  "errors": [],
+  "messages": []
+}
+```
+
+将 `result[0].id` 填入脚本的 `CFRecordID`。如果 `result` 是空数组，请检查：
+
+- `CFDNSNAME` 是否为完整域名。
+- Cloudflare 是否已经存在对应的 AAAA 记录。
+- Token 是否有目标 Zone 的读取权限。
+- 查询的记录类型是否确实为 AAAA。
+
+不使用 `jq` 时也可以删除命令最后的 `| jq`，然后手工查找 JSON 中的 `result[0].id`。
+
+### 创建 RouterOS 脚本
+
+在 `System -> Scripts` 新建：
+
+```text
+Name: cloudflare-ddns-ipv6
+Policy: read, write, test, sensitive
+```
+
+将 [`scripts/cloudflare-ddns-ipv6.rsc`](scripts/cloudflare-ddns-ipv6.rsc) 的内容粘贴到 `Source`，替换参数后先手动运行一次。
+
+正常更新时日志类似：
+
+```text
+CF-DDNS: updated successfully to 2001:db8::1234
+```
+
+再次运行时如果 IPv6 没变化，脚本不会写入新日志。
+
+### 创建 Scheduler
 
 ```routeros
 /system scheduler add name=CloudflareDDNS interval=5m \
@@ -51,7 +170,12 @@ Scheduler：
     policy=read,write,test,sensitive
 ```
 
-Cloudflare Token 只需要目标 Zone 的 `DNS:Edit` 和 `Zone:Read` 权限。
+查看运行状态：
+
+```routeros
+/system scheduler print detail where name="CloudflareDDNS"
+/log print where message~"CF-DDNS"
+```
 
 ## CNIP Updater
 
@@ -179,3 +303,9 @@ Scheduler：
 ## License
 
 [MIT](LICENSE)
+
+## 参考资料
+
+- [MikroTik Cloud DDNS](https://help.mikrotik.com/docs/spaces/ROS/pages/97779929/Cloud#Cloud-DDNS)
+- [bajodel/mikrotik-cloudflare-dns](https://github.com/bajodel/mikrotik-cloudflare-dns)
+- [Mikrotik RouterOS 7.15 Cloudflare DDNS 脚本](https://tccmu.com/2024/08/06/rosddns/)
