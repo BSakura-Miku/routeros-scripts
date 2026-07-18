@@ -2,13 +2,15 @@
 # Downloads a RouterOS CN.rsc list, replaces the active list, and rolls back on failure.
 
 :global CNUpdateRunning
-:if ($CNUpdateRunning = true) do={:return}
+:if ($CNUpdateRunning = true) do={
+    :log warning "CNIP update skipped: another update is running"
+    :return
+}
 :set CNUpdateRunning true
 
 :local listName "CN"
 :local backupList "CN_BACKUP"
-:local fileName "CN.rsc"
-:local logFile "temp_log.txt"
+:local fileName "pcie1/CN.rsc"
 :local sourceURL "https://gh-proxy.org/https://raw.githubusercontent.com/ruijzhan/chnroute/master/CN.rsc"
 :local minCount 6000
 :local maxCount 10000
@@ -22,8 +24,9 @@
     }
 
     /ip firewall address-list remove [find where list=$backupList]
-    :if ([:len [/file find where name=$fileName]] > 0) do={/file remove [find where name=$fileName]}
-    :if ([:len [/file find where name=$logFile]] > 0) do={/file remove [find where name=$logFile]}
+    :if ([:len [/file find where name=$fileName]] > 0) do={
+        /file remove [find where name=$fileName]
+    }
 
     :foreach item in=[/ip firewall address-list find where list=$listName] do={
         :local address [/ip firewall address-list get $item address]
@@ -36,15 +39,18 @@
     }
 
     /tool fetch url=$sourceURL mode=https dst-path=$fileName check-certificate=yes
-    :delay 2s
 
     :if ([:len [/file find where name=$fileName]] = 0) do={
         :error "downloaded CN.rsc is missing"
     }
 
+    :local fileSize [/file get [find where name=$fileName] size]
+    :if ($fileSize < 100000) do={
+        :error ("downloaded CN.rsc is too small: " . $fileSize)
+    }
+
     /ip firewall address-list remove [find where list=$listName]
-    /execute script=("/import " . $fileName) file="temp_log"
-    :delay 30s
+    /import file-name=$fileName
 
     :local newCount [/ip firewall address-list print count-only where list=$listName]
     :if (($newCount < $minCount) || ($newCount > $maxCount)) do={
@@ -54,8 +60,9 @@
     :log warning ("CNIP update succeeded, new count=" . $newCount)
 
     /ip firewall address-list remove [find where list=$backupList]
-    :if ([:len [/file find where name=$fileName]] > 0) do={/file remove [find where name=$fileName]}
-    :if ([:len [/file find where name=$logFile]] > 0) do={/file remove [find where name=$logFile]}
+    :if ([:len [/file find where name=$fileName]] > 0) do={
+        /file remove [find where name=$fileName]
+    }
 } on-error={
     :local currentCount [/ip firewall address-list print count-only where list=$listName]
     :local backupCount [/ip firewall address-list print count-only where list=$backupList]
@@ -74,8 +81,9 @@
     }
 
     /ip firewall address-list remove [find where list=$backupList]
-    :if ([:len [/file find where name=$fileName]] > 0) do={/file remove [find where name=$fileName]}
-    :if ([:len [/file find where name=$logFile]] > 0) do={/file remove [find where name=$logFile]}
+    :if ([:len [/file find where name=$fileName]] > 0) do={
+        /file remove [find where name=$fileName]
+    }
 }
 
 :set CNUpdateRunning false

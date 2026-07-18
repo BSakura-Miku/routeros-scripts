@@ -40,9 +40,10 @@ RouterOS 自带 [MikroTik Cloud DDNS](https://help.mikrotik.com/docs/spaces/ROS/
 - 自动获取指定 PPPoE 接口的公网 IPv6。
 - 排除 link-local、无效、禁用及 Deprecated 地址。
 - 只更新 Cloudflare AAAA 记录，不写入 IPv4 A 记录。
-- 仅在 IPv6 变化时调用 Cloudflare API。
+- 每次先读取 Cloudflare 当前 AAAA 记录，仅在 IPv6 不一致时提交更新。
 - 使用 `check-certificate=yes` 验证 HTTPS 证书。
-- 解析 Cloudflare JSON，只有 `success=true` 才缓存最新地址。
+- 解析 Cloudflare JSON，只有查询成功且记录不一致时才执行 PUT。
+- 不依赖 RouterOS 全局变量，重启和 Scheduler 独立执行后也不会重复更新。
 - 地址未变化时保持静默，避免每 5 分钟产生重复日志。
 
 ### 配置参数
@@ -157,7 +158,7 @@ Policy: read, write, test, sensitive
 正常更新时日志类似：
 
 ```text
-CF-DDNS: updated successfully to 2001:db8::1234
+CF-DDNS: updated successfully from 2001:db8::1 to 2001:db8::1234
 ```
 
 再次运行时如果 IPv6 没变化，脚本不会写入新日志。
@@ -188,12 +189,14 @@ https://github.com/ruijzhan/chnroute
 工作流程：
 
 ```text
-检查旧列表 -> 备份 CN -> TLS 下载 -> 清空 CN -> 导入新列表
-                                         |
-                                         +-> 数量异常时恢复备份
+检查旧列表 -> 备份 CN -> 下载到 pcie1 -> 校验文件大小 -> 清空 CN -> 同步导入
+                                                               |
+                                                               +-> 数量异常时恢复备份
 ```
 
-默认接受 `6000-10000` 条记录。首次部署前必须已经存在有效的 `CN` 列表，否则脚本会拒绝覆盖。
+默认接受 `6000-10000` 条记录，并要求下载文件至少 `100000` 字节。首次部署前必须已经存在有效的 `CN` 列表，否则脚本会拒绝覆盖。
+
+脚本默认使用 `pcie1/CN.rsc` 作为临时文件路径，避免 RouterOS 7.23 在根目录写入时出现 `cannot open file: permission denied`。如果设备没有名为 `pcie1` 的可写磁盘，请将 `fileName` 改成设备上的实际可写路径。
 
 Scheduler：
 

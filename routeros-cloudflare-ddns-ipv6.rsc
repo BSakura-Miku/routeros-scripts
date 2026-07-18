@@ -20,23 +20,29 @@
 :if ($PUB6 = "") do={
     :log error "CF-DDNS: no usable global IPv6 address found"
 } else={
-    :global CFLastIPv6
+    :local apiURL ("https://api.cloudflare.com/client/v4/zones/" . $CFZoneID . "/dns_records/" . $CFRecordID)
 
-    :if ($PUB6 != $CFLastIPv6) do={
-        :local apiURL ("https://api.cloudflare.com/client/v4/zones/" . $CFZoneID . "/dns_records/" . $CFRecordID)
+    :do {
+        :local getResponse [/tool fetch url=$apiURL mode=https http-method=get check-certificate=yes output=user as-value http-header-field=("Authorization: Bearer " . $CFAPITOKEN)]
+        :local getBody [:deserialize from=json value=($getResponse->"data")]
+        :local record ($getBody->"result")
+        :local currentIPv6 ($record->"content")
 
-        :do {
-            :local response [/tool fetch url=$apiURL mode=https http-method=put check-certificate=yes output=user as-value http-header-field=("Authorization: Bearer " . $CFAPITOKEN . ",Content-Type: application/json") http-data=("{\"type\":\"AAAA\",\"name\":\"" . $CFDNSNAME . "\",\"content\":\"" . $PUB6 . "\",\"ttl\":120,\"proxied\":false}")]
-            :local result [:deserialize from=json value=($response->"data")]
-
-            :if ((($response->"status") = "finished") && (($result->"success") = true)) do={
-                :set CFLastIPv6 $PUB6
-                :log info ("CF-DDNS: updated successfully to " . $PUB6)
-            } else={
-                :log error "CF-DDNS: API returned unsuccessful response"
-            }
-        } on-error={
-            :log error "CF-DDNS: HTTPS/API update failed"
+        :if ((($getResponse->"status") != "finished") || (($getBody->"success") != true)) do={
+            :error "Cloudflare record query failed"
         }
+
+        :if ($PUB6 != $currentIPv6) do={
+            :local putResponse [/tool fetch url=$apiURL mode=https http-method=put check-certificate=yes output=user as-value http-header-field=("Authorization: Bearer " . $CFAPITOKEN . ",Content-Type: application/json") http-data=("{\"type\":\"AAAA\",\"name\":\"" . $CFDNSNAME . "\",\"content\":\"" . $PUB6 . "\",\"ttl\":120,\"proxied\":false}")]
+            :local putBody [:deserialize from=json value=($putResponse->"data")]
+
+            :if ((($putResponse->"status") = "finished") && (($putBody->"success") = true)) do={
+                :log info ("CF-DDNS: updated successfully from " . $currentIPv6 . " to " . $PUB6)
+            } else={
+                :error "Cloudflare record update failed"
+            }
+        }
+    } on-error={
+        :log error "CF-DDNS: HTTPS/API operation failed"
     }
 }
